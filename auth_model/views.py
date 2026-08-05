@@ -44,7 +44,7 @@ from django.http import HttpResponse, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
-from .repo_dealing import dealing_reopo_func, get_pr_check_runs, get_pr_diff_repo_number
+from .auth_data import dealing_reopo_func, get_pr_check_runs, get_pr_diff_repo_number
 logger = logging.getLogger(__name__)
 
 
