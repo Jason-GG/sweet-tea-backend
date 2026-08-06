@@ -3,5 +3,5 @@
 from django.urls import path, include
 
 urlpatterns = [
-    path("github/api/", include("auth_model.urls")),
+    path("api/", include("auth_model.urls")),
 ]
