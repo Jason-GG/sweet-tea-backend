@@ -9,6 +9,7 @@ This is a standalone Django project designed to handle GitHub webhook events and
 - **Approval Request Workflow**: Submit PR details to external workflow engines
 - **HMAC Signature Verification**: Verify GitHub webhook signatures for security
 - **Email Verification Registration**: Require a verified email code before creating a user account
+- **Role-Based API Authorization**: New accounts default to `user`; admins can promote/demote users via API
 
 ## Project Structure
 ```
@@ -83,6 +84,16 @@ gunicorn config.wsgi:application --bind 0.0.0.0:8000
 
 ## API Endpoints
 
+### Health Check
+- **URL**: `GET /api/health/`
+- **Auth**: Requires a logged-in session with at least `user` role. `admin` role also has access.
+- **Response**:
+```json
+{
+  "status": "ok"
+}
+```
+
 ### Email Verification Registration
 
 Registration requires verifying the email address first.
@@ -132,9 +143,41 @@ Registration requires verifying the email address first.
 
 If the email has not been verified, registration returns `403` and no account is created. `username` is optional; if omitted, the backend uses `display_name`, `nickname`, or the email prefix.
 
+Registered accounts automatically receive the default profile role `user`.
+
+#### Log out
+- **URL**: `POST /api/auth/logout/`
+- **Auth**: Optional; clears the current session if one exists
+- **Description**: Logs out the current browser/client session.
+- **Response**:
+```json
+{
+  "message": "Logout successful",
+  "was_authenticated": true
+}
+```
+
+#### Current user role
+- **URL**: `GET /api/auth/role/`
+- **Auth**: Requires a logged-in session with at least `user` role
+- **Description**: Returns the signed-in user's effective role.
+
+#### Update another user's role
+- **URL**: `PUT /api/users/<user_id>/role/`
+- **Auth**: Requires a logged-in session with `admin` role
+- **Body**:
+```json
+{
+  "role": "admin"
+}
+```
+
+Valid roles are `user` and `admin`. Use `PATCH` with the same body if preferred. A user with role `admin` can update another user's role; non-admin users receive `403`.
+
 #### Update account/profile
 - **URL**: `POST /api/auth/account/update/`
-- **Description**: Updates account and profile fields. Requires the existing account email and `current_password`.
+- **Auth**: Requires a logged-in session with at least `user` role
+- **Description**: Updates the signed-in user's account and profile fields. Requires the existing account email and `current_password`.
 - **Body**:
 ```json
 {
@@ -176,6 +219,7 @@ Email changes are intentionally rejected by this endpoint because a new email ad
 
 ### PR Information
 - **URL**: `GET /api/pr-info/?repo=owner/repo&pr=123&sha=optional-sha`
+- **Auth**: Requires a logged-in session with at least `user` role
 - **Description**: Fetches PR diff and check-run results
 - **Parameters**:
   - `repo` (required): Repository in format `owner/repo`
@@ -206,6 +250,12 @@ All settings are loaded from environment variables. Edit your `.env` file to cus
 - `DJANGO_SECRET_KEY`: Django secret key (must be set in production)
 - `DEBUG`: Set to 'true' for development, 'false' for production
 - `ALLOWED_HOSTS`: Comma-separated list of allowed hosts
+- `CORS_ALLOW_ALL_ORIGINS`: Set to `true` to allow browser requests from any origin; defaults to `true`
+- `CORS_ALLOWED_ORIGINS`: Comma-separated allowed frontend origins when `CORS_ALLOW_ALL_ORIGINS=false`, for example `http://localhost:3000,https://app.example.com`
+- `CORS_ALLOW_CREDENTIALS`: Allows frontend requests that use cookies/session credentials; defaults to `true`
+- `CSRF_TRUSTED_ORIGINS`: Comma-separated trusted origins for CSRF-protected browser requests; defaults to `CORS_ALLOWED_ORIGINS`
+- `SESSION_COOKIE_SAMESITE`: Session cookie SameSite value, defaults to `Lax`; use `None` with HTTPS if sending cookies cross-origin
+- `SESSION_COOKIE_SECURE`: Whether session cookies require HTTPS; defaults to `true` when `DEBUG=false`
 - `POSTGRES_DB`, `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`: PostgreSQL connection settings. Legacy `MYSQL_*` names are still accepted as fallbacks.
 - `MAILERSEND_API_TOKEN`: MailerSend API token
 - `MAILERSEND_FROM_EMAIL`: Verified MailerSend sender address
@@ -235,6 +285,12 @@ Your `GITHUB_TOKEN` should have the following scopes:
 - **CSRF Protection**: Disabled for webhook endpoint (csrf_exempt) as GitHub doesn't provide CSRF tokens
 
 ## Troubleshooting
+
+### MailerSend 422 When Requesting an Email Code
+MailerSend returns `422 Unprocessable Entity` when the email payload is syntactically accepted but fails validation. Check the server logs for the MailerSend response body, then verify:
+1. `MAILERSEND_FROM_EMAIL` is a sender address on a verified MailerSend domain.
+2. `MAILERSEND_API_TOKEN` belongs to the same MailerSend account as that verified domain.
+3. The recipient email is valid and allowed by your MailerSend account/trial restrictions.
 
 ### SSO Block (403 Error)
 If you see "403/SSO block" messages:

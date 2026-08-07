@@ -1,3 +1,4 @@
+import json
 import logging
 
 import requests
@@ -9,14 +10,32 @@ This module keeps outbound HTTP integrations in one place so views can call a
 small, testable API.
 """
 logger = logging.getLogger(__name__)
+logger.level=logging.DEBUG
+
+
+def _format_response_body(response: requests.Response | None, max_length: int = 1000) -> str:
+    """Return a concise, log-safe representation of an HTTP response body."""
+    if response is None:
+        return ""
+
+    try:
+        body = json.dumps(response.json(), ensure_ascii=False)
+    except ValueError:
+        body = response.text or ""
+
+    body = body.strip()
+    if len(body) > max_length:
+        return f"{body[:max_length]}..."
+    return body
 
 
 def send_email(to_email: str, code: str, to_name: str | None = None) -> dict:
     """Send an email verification code using MailerSend."""
-    access_token = getattr(settings, "MAILERSEND_API_TOKEN", "")
+    access_token = getattr(settings, "MAILERSEND_API_TOKEN", "mlsn.30c9e8972e8e24b4d035fd6d98ca79332094d36a01b9ed64114c6d22605c0f01")
     mail_url = getattr(settings, "MAILERSEND_API_URL", "https://api.mailersend.com/v1/email")
     from_email = getattr(settings, "MAILERSEND_FROM_EMAIL", "MS_peZn6j@test-2p0347zee5klzdrn.mlsender.net")
-    from_name = getattr(settings, "MAILERSEND_FROM_NAME", "Sweet Tea")
+    # from_name = getattr(settings, "MAILERSEND_FROM_NAME", "Sweet Tea")
+    from_name = getattr(settings, "MAILERSEND_FROM_NAME", "MailerSend")
 
     if not access_token or not from_email:
         raise RuntimeError("MAILERSEND_API_TOKEN and MAILERSEND_FROM_EMAIL must be configured")
@@ -36,21 +55,31 @@ def send_email(to_email: str, code: str, to_name: str | None = None) -> dict:
         "subject": "Your Sweet Tea verification code",
         "text": f"Your Sweet Tea verification code is {code}. It expires soon.",
         "html": f"<p>Your Sweet Tea verification code is <b>{code}</b>.</p><p>It expires soon.</p>",
-        "personalization": [
-            {
-                "email": to_email,
-                "data": {
-                    "code": code,
-                },
-            }
-        ],
     }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {access_token}",
     }
-    result = requests.post(mail_url, json=payload, headers=headers, timeout=10)
-    result.raise_for_status()
+    try:
+        logger.debug("MailerSend request payload: %s", json.dumps(payload))
+        result = requests.post(mail_url, json=payload, headers=headers, timeout=10)
+        result.raise_for_status()
+    except requests.HTTPError as exc:
+        response = exc.response
+        response_body = _format_response_body(response)
+        status_code = getattr(response, "status_code", "unknown")
+        if response_body:
+            logger.error("MailerSend request failed with HTTP %s: %s", status_code, response_body)
+            raise RuntimeError(
+                f"MailerSend request failed with HTTP {status_code}: {response_body}"
+            ) from exc
+
+        logger.error("MailerSend request failed with HTTP %s", status_code)
+        raise RuntimeError(f"MailerSend request failed with HTTP {status_code}") from exc
+    except requests.RequestException as exc:
+        logger.error("MailerSend request failed: %s", exc)
+        raise RuntimeError(f"MailerSend request failed: {exc}") from exc
+
     if result.content:
         try:
             return result.json()

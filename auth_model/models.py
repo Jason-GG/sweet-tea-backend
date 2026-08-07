@@ -19,8 +19,8 @@ class EmailVerificationCode(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["email", "created_at"]),
-            models.Index(fields=["email", "verified_at", "consumed_at"]),
+            models.Index(fields=["email", "created_at"], name="auth_model_email_created_idx"),
+            models.Index(fields=["email", "verified_at", "consumed_at"], name="auth_model_email_verified_idx"),
         ]
 
     def __str__(self) -> str:
@@ -72,7 +72,15 @@ class EmailVerificationCode(models.Model):
 class UserProfile(models.Model):
     """Extra profile fields collected during account registration/profile setup."""
 
+    ROLE_USER = "user"
+    ROLE_ADMIN = "admin"
+    ROLE_CHOICES = [
+        (ROLE_USER, "User"),
+        (ROLE_ADMIN, "Admin"),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_USER)
     display_name = models.CharField(max_length=150, blank=True)
     location = models.CharField(max_length=150, blank=True)
     profile_focus = models.CharField(max_length=100, blank=True)
@@ -93,6 +101,7 @@ class UserProfile(models.Model):
 
     def to_dict(self) -> dict:
         return {
+            "role": self.role,
             "display_name": self.display_name,
             "location": self.location,
             "profile_focus": self.profile_focus,

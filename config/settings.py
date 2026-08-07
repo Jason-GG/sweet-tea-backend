@@ -15,10 +15,18 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    return os.environ.get(name, str(default)).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    return [value.strip() for value in os.environ.get(name, default).split(",") if value.strip()]
+
 # --- Core Django ---
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "change-me-in-production")
-DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
-ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "*").split(",") if h.strip()]
+DEBUG = _env_bool("DEBUG", False)
+ALLOWED_HOSTS = _env_list("ALLOWED_HOSTS", "*")
 
 # --- Application definition ---
 INSTALLED_APPS = [
@@ -66,7 +74,16 @@ else:
     }
 
 # --- CORS ---
-CORS_ALLOW_ALL_ORIGINS = os.environ.get("CORS_ALLOW_ALL_ORIGINS", "true").lower() == "true"
+CORS_ALLOW_ALL_ORIGINS = _env_bool("CORS_ALLOW_ALL_ORIGINS", True)
+CORS_ALLOWED_ORIGINS = _env_list("CORS_ALLOWED_ORIGINS")
+CORS_ALLOW_CREDENTIALS = _env_bool("CORS_ALLOW_CREDENTIALS", True)
+CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS") or CORS_ALLOWED_ORIGINS
+
+# If your frontend sends cookies/session credentials cross-origin, set:
+# CORS_ALLOW_CREDENTIALS=true, SESSION_COOKIE_SAMESITE=None, SESSION_COOKIE_SECURE=true.
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = os.environ.get("SESSION_COOKIE_SAMESITE", "Lax")
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", not DEBUG)
 
 # --- Internationalization ---
 LANGUAGE_CODE = "en-us"

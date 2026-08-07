@@ -43,6 +43,8 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth import login as auth_login
+from django.contrib.auth import logout as auth_logout
 from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -55,6 +57,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from .auth_data import dealing_reopo_func, get_pr_check_runs, get_pr_diff_repo_number, send_email
 from .models import EmailVerificationCode, UserProfile
+from .permissions import get_user_role, role_required
 logger = logging.getLogger(__name__)
 
 _VERIFICATION_CODE_RE = re.compile(r"^\d{6}$")
@@ -102,6 +105,7 @@ def _user_to_dict(user: User) -> dict:
         "email": user.email,
         "first_name": user.first_name,
         "last_name": user.last_name,
+        "role": get_user_role(user),
     }
 
 
@@ -301,6 +305,60 @@ class RegisterView(View):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
+class LoginView(View):
+    """POST /api/auth/login/ with {"email": "user@example.com", "password": "..."}."""
+
+    def post(self, request):
+        data, error_response = _parse_json_body(request)
+        if error_response:
+            return error_response
+
+        try:
+            email_address = f"{_normalize_email(_json_string(data, 'email'))}"
+        except ValidationError:
+            return JsonResponse({"error": "A valid email is required"}, status=400)
+
+        password = _json_string(data, "password")
+        if not password:
+            return JsonResponse({"error": "Password is required"}, status=400)
+
+        user = User.objects.filter(email__iexact=email_address).first()
+        if not user or not user.check_password(password):
+            return JsonResponse({"error": "Invalid email or password"}, status=403)
+        if not user.is_active:
+            return JsonResponse({"error": "Account is inactive"}, status=403)
+
+        auth_login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        profile, _created = UserProfile.objects.get_or_create(user=user)
+
+        return JsonResponse(
+            {
+                "message": "Login successful",
+                "user": _user_to_dict(user),
+                "profile": profile.to_dict(),
+            },
+            status=200,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class LogoutView(View):
+    """POST /api/auth/logout/ clears the current session if one exists."""
+
+    def post(self, request):
+        was_authenticated = bool(getattr(request, "user", None) and request.user.is_authenticated)
+        auth_logout(request)
+        return JsonResponse(
+            {
+                "message": "Logout successful",
+                "was_authenticated": was_authenticated,
+            },
+            status=200,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(role_required(UserProfile.ROLE_USER), name="dispatch")
 class AccountUpdateView(View):
     """POST /api/auth/account/update/ to modify account/profile data after password verification."""
 
@@ -321,6 +379,8 @@ class AccountUpdateView(View):
         user = User.objects.filter(email__iexact=email_address).first()
         if not user or not user.check_password(current_password):
             return JsonResponse({"error": "Invalid email or current_password"}, status=403)
+        if user.pk != request.user.pk:
+            return JsonResponse({"error": "You can only update your own account"}, status=403)
 
         requested_email = _json_string(data, "new_email").strip()
         if requested_email:
@@ -375,6 +435,87 @@ class AccountUpdateView(View):
         )
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(role_required(UserProfile.ROLE_USER), name="dispatch")
+class CurrentUserRoleView(View):
+    """GET /api/auth/role/ returns the signed-in user's effective role."""
+
+    def get(self, request):
+        profile, _created = UserProfile.objects.get_or_create(user=request.user)
+        return JsonResponse(
+            {
+                "user": _user_to_dict(request.user),
+                "role": get_user_role(request.user),
+                "profile": profile.to_dict(),
+            },
+            status=200,
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(role_required(UserProfile.ROLE_ADMIN), name="dispatch")
+class UserRoleView(View):
+    """GET/PUT/PATCH /api/users/<user_id>/role/ for admin-only role management."""
+
+    def _get_target_user(self, user_id: int) -> User | None:
+        return User.objects.filter(pk=user_id).first()
+
+    def get(self, request, user_id: int):
+        target_user = self._get_target_user(user_id)
+        if not target_user:
+            return JsonResponse({"error": "User not found"}, status=404)
+
+        profile, _created = UserProfile.objects.get_or_create(user=target_user)
+        return JsonResponse(
+            {
+                "user": _user_to_dict(target_user),
+                "role": get_user_role(target_user),
+                "profile": profile.to_dict(),
+            },
+            status=200,
+        )
+
+    def put(self, request, user_id: int):
+        data, error_response = _parse_json_body(request)
+        if error_response:
+            return error_response
+
+        requested_role = _json_string(data, "role").strip().lower()
+        valid_roles = {choice[0] for choice in UserProfile.ROLE_CHOICES}
+        if requested_role not in valid_roles:
+            return JsonResponse(
+                {
+                    "error": "role must be one of: user, admin",
+                    "valid_roles": sorted(valid_roles),
+                },
+                status=400,
+            )
+        if request.user.pk == user_id and requested_role != UserProfile.ROLE_ADMIN:
+            return JsonResponse({"error": "Admins cannot remove their own admin role"}, status=400)
+
+        with transaction.atomic():
+            target_user = User.objects.select_for_update().filter(pk=user_id).first()
+            if not target_user:
+                return JsonResponse({"error": "User not found"}, status=404)
+
+            profile, _created = UserProfile.objects.select_for_update().get_or_create(user=target_user)
+            profile.role = requested_role
+            profile.save(update_fields=["role", "updated_at"])
+
+        return JsonResponse(
+            {
+                "message": "User role updated",
+                "user": _user_to_dict(target_user),
+                "role": get_user_role(target_user),
+                "profile": profile.to_dict(),
+            },
+            status=200,
+        )
+
+    def patch(self, request, user_id: int):
+        return self.put(request, user_id)
+
+
 def _verify_github_signature(request) -> bool:
     """
     Verify the X-Hub-Signature-256 header sent by GitHub.
@@ -413,6 +554,7 @@ def _verify_github_signature(request) -> bool:
 # ---------------------------------------------------------------------------
 
 @method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(role_required(UserProfile.ROLE_USER), name="dispatch")
 class PrInfoView(View):
     """
     GET /github/api/pr-info/?repo=owner/repo&pr=<number>
@@ -618,6 +760,7 @@ class GitHubWebhookView(View):
 
 
 
+@role_required(UserProfile.ROLE_USER)
 def health_check(request):
     """Simple health check endpoint."""
     return JsonResponse({"status": "ok"})
