@@ -94,6 +94,10 @@ def _json_bool(data: dict[str, object], key: str) -> bool:
     return bool(value)
 
 
+def _email_verification_enabled() -> bool:
+    return bool(getattr(settings, "EMAIL_VERIFICATION_ENABLED", True))
+
+
 def _limit(value: str, max_length: int) -> str:
     return value.strip()[:max_length]
 
@@ -143,6 +147,9 @@ class RequestEmailVerificationCodeView(View):
         if User.objects.filter(email__iexact=email_address).exists():
             return JsonResponse({"error": "An account with this email already exists"}, status=409)
 
+        if not _email_verification_enabled():
+            return JsonResponse({"message": "Email verification is disabled; register directly"}, status=200)
+
         code = str(_generate_verification_code())
         expires_at = timezone.now() + timedelta(
             minutes=getattr(settings, "EMAIL_VERIFICATION_CODE_TTL_MINUTES", 10)
@@ -177,6 +184,9 @@ class VerifyEmailCodeView(View):
             email_address = f"{_normalize_email(_json_string(data, 'email'))}"
         except ValidationError:
             return JsonResponse({"error": "A valid email is required"}, status=400)
+
+        if not _email_verification_enabled():
+            return JsonResponse({"message": "Email verification is disabled; register directly"}, status=200)
 
         code = str(data.get("code", "")).strip()
         if not _VERIFICATION_CODE_RE.match(code):
@@ -256,15 +266,17 @@ class RegisterView(View):
         except ValidationError as exc:
             return JsonResponse({"error": "Password validation failed", "details": exc.messages}, status=400)
 
+        verification = None
         with transaction.atomic():
-            verification = (
-                EmailVerificationCode.objects.select_for_update()
-                .filter(email=email_address, verified_at__isnull=False)
-                .order_by("-verified_at")
-                .first()
-            )
-            if not verification:
-                return JsonResponse({"error": "Email must be verified before registration"}, status=403)
+            if _email_verification_enabled():
+                verification = (
+                    EmailVerificationCode.objects.select_for_update()
+                    .filter(email=email_address, verified_at__isnull=False)
+                    .order_by("-verified_at")
+                    .first()
+                )
+                if not verification:
+                    return JsonResponse({"error": "Email must be verified before registration"}, status=403)
 
             user = User.objects.create_user(
                 username=username,
@@ -285,7 +297,7 @@ class RegisterView(View):
                 avatar_color=avatar_color,
                 self_introduction=self_introduction,
             )
-            if not verification.is_consumed:
+            if verification and not verification.is_consumed:
                 verification.mark_consumed()
 
         return JsonResponse(

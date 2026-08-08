@@ -10,6 +10,7 @@ from .auth_data import send_email
 from .models import EmailVerificationCode, UserProfile
 
 
+@override_settings(EMAIL_VERIFICATION_ENABLED=True)
 class EmailVerificationRegistrationTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -36,6 +37,41 @@ class EmailVerificationRegistrationTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(User.objects.filter(email=self.email).exists())
+
+    @override_settings(EMAIL_VERIFICATION_ENABLED=False)
+    def test_register_skips_email_verification_when_disabled(self):
+        response = self.post_json(
+            "/api/auth/register/",
+            {
+                "email": self.email,
+                "username": self.username,
+                "password": self.password,
+                "confirm_password": self.password,
+                "first_name": "New",
+                "last_name": "User",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(User.objects.filter(email=self.email).exists())
+        self.assertFalse(EmailVerificationCode.objects.filter(email=self.email).exists())
+
+    @override_settings(EMAIL_VERIFICATION_ENABLED=False)
+    @patch("auth_model.views.send_email")
+    def test_email_verification_endpoints_noop_when_disabled(self, mock_send_email):
+        request_response = self.post_json(
+            "/api/auth/request-code/",
+            {"email": self.email, "name": "New User"},
+        )
+        verify_response = self.post_json(
+            "/api/auth/verify-code/",
+            {"email": self.email, "code": "not-a-code"},
+        )
+
+        self.assertEqual(request_response.status_code, 200)
+        self.assertEqual(verify_response.status_code, 200)
+        mock_send_email.assert_not_called()
+        self.assertFalse(EmailVerificationCode.objects.filter(email=self.email).exists())
 
     @patch("auth_model.views.send_email")
     @patch("auth_model.views._generate_verification_code", return_value="123456")
