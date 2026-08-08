@@ -26,7 +26,7 @@ def _env_list(name: str, default: str = "") -> list[str]:
 # --- Core Django ---
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "change-me-in-production")
 DEBUG = _env_bool("DEBUG", False)
-ALLOWED_HOSTS = _env_list("ALLOWED_HOSTS", "*")
+ALLOWED_HOSTS = '*'
 
 # --- Application definition ---
 INSTALLED_APPS = [
